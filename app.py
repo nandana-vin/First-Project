@@ -1,5 +1,7 @@
-import streamlit as st
+import sqlite3
+
 import pandas as pd
+import streamlit as st
 
 from calculations import (
     calculate_weighted_grade,
@@ -7,10 +9,22 @@ from calculations import (
     calculate_required_grade
 )
 
+from database import (
+    create_tables,
+    add_course,
+    get_courses,
+    update_course,
+    delete_course,
+    add_assessment,
+    get_assessments,
+    update_assessment,
+    delete_assessment
+)
 
-# --------------------------------------------------
+
+# -----------------------------------------
 # PAGE CONFIGURATION
-# --------------------------------------------------
+# -----------------------------------------
 
 st.set_page_config(
     page_title="Student Grade Tracker",
@@ -18,78 +32,26 @@ st.set_page_config(
     layout="wide"
 )
 
+create_tables()
+
 st.title("Student Grade Tracker")
-st.write("Track your academic performance and calculate your target grades.")
+st.write("Track your grades and calculate what you need to reach your goals.")
 
 
-# --------------------------------------------------
-# INITIALIZE SESSION STATE
-# --------------------------------------------------
-
-COURSE_NAMES = ["CISC 121", "CISC 171", "MATH 121"]
-
-if "courses" not in st.session_state:
-    st.session_state.courses = {
-        name: {} for name in COURSE_NAMES
-    }
-
-
-# --------------------------------------------------
-# SAVE FUNCTIONS
-# --------------------------------------------------
-
-def save_grade(course_name, assessment_number):
-
-    grade_key = f"{course_name}_grade_{assessment_number}"
-    weight_key = f"{course_name}_weight_{assessment_number}"
-
-    course_data = st.session_state.courses[course_name]
-
-    if grade_key in st.session_state:
-        course_data[grade_key] = st.session_state[grade_key]
-
-    if weight_key in st.session_state:
-        course_data[weight_key] = st.session_state[weight_key]
-
-
-def save_assessment_count(course_name):
-
-    count_key = f"{course_name}_num_assignments"
-
-    st.session_state.courses[course_name]["num_assignments"] = (
-        st.session_state[count_key]
-    )
-
-
-def save_target(course_name):
-
-    target_key = f"{course_name}_target_grade"
-
-    st.session_state.courses[course_name]["target_grade"] = (
-        st.session_state[target_key]
-    )
-
-
-# --------------------------------------------------
+# -----------------------------------------
 # CALCULATE COURSE RESULTS
-# --------------------------------------------------
+# -----------------------------------------
 
-def get_course_results(course_name):
+def get_course_results(course_id):
 
-    course_data = st.session_state.courses[course_name]
-
-    num_assignments = course_data.get("num_assignments", 3)
+    assessments = get_assessments(course_id)
 
     total_weighted_grade = 0
     total_weight = 0
 
-    for i in range(num_assignments):
+    for assessment in assessments:
 
-        grade_key = f"{course_name}_grade_{i}"
-        weight_key = f"{course_name}_weight_{i}"
-
-        grade = course_data.get(grade_key, 0.0)
-        weight = course_data.get(weight_key, 0.0)
+        assessment_id, course_id, name, grade, weight = assessment
 
         total_weighted_grade += calculate_weighted_grade(
             grade, weight
@@ -98,7 +60,7 @@ def get_course_results(course_name):
         total_weight += weight
 
     if total_weight > 100:
-        return None, total_weight
+        return None, total_weight, total_weighted_grade
 
     if total_weight > 0:
 
@@ -107,298 +69,469 @@ def get_course_results(course_name):
             total_weight
         )
 
-        return average, total_weight
+        return average, total_weight, total_weighted_grade
 
-    return None, 0
+    return None, 0, 0
 
 
-# --------------------------------------------------
+# -----------------------------------------
 # SIDEBAR NAVIGATION
-# --------------------------------------------------
+# -----------------------------------------
 
 st.sidebar.title("Navigation")
 
 page = st.sidebar.radio(
     "Go to",
-    ["Dashboard", "Course Tracker"]
+    ["Dashboard", "Course Tracker", "Manage Courses"]
 )
 
 
-# --------------------------------------------------
+# -----------------------------------------
 # DASHBOARD
-# --------------------------------------------------
+# -----------------------------------------
 
 if page == "Dashboard":
 
     st.header("Academic Dashboard")
 
+    courses = get_courses()
+
     dashboard_data = []
 
-    for course_name in COURSE_NAMES:
+    for course_id, name, target_grade in courses:
 
-        average, completed_weight = get_course_results(
-            course_name
-        )
-
-        target = st.session_state.courses[course_name].get(
-            "target_grade", 85.0
+        average, completed_weight, _ = get_course_results(
+            course_id
         )
 
         dashboard_data.append({
-            "Course": course_name,
+            "Course": name,
             "Current Average": average,
             "Completed Weight": completed_weight,
-            "Target Grade": target
+            "Target Grade": target_grade
         })
 
-    df = pd.DataFrame(dashboard_data)
+    if dashboard_data:
 
-    # Summary metrics
-    total_courses = len(COURSE_NAMES)
+        df = pd.DataFrame(dashboard_data)
 
-    active_courses = df["Current Average"].notna().sum()
+        col1, col2 = st.columns(2)
 
-    col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total Courses", len(courses))
 
-    with col1:
-        st.metric("Total Courses", total_courses)
+        with col2:
+            st.metric(
+                "Courses With Grades",
+                int(df["Current Average"].notna().sum())
+            )
 
-    with col2:
-        st.metric("Courses With Grades", active_courses)
+        st.divider()
 
-    st.divider()
+        st.subheader("Course Overview")
 
-    # Course overview table
-    st.subheader("Course Overview")
+        display_df = df.copy()
 
-    display_df = df.copy()
-
-    display_df["Current Average"] = display_df[
-        "Current Average"
-    ].apply(
-        lambda x: f"{x:.2f}%" if pd.notna(x) else "No grades"
-    )
-
-    display_df["Completed Weight"] = display_df[
-        "Completed Weight"
-    ].apply(
-        lambda x: f"{x:.2f}%"
-    )
-
-    display_df["Target Grade"] = display_df[
-        "Target Grade"
-    ].apply(
-        lambda x: f"{x:.2f}%"
-    )
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    # Grade comparison chart
-    st.subheader("Grade Comparison")
-
-    chart_df = df.dropna(
-        subset=["Current Average"]
-    )
-
-    if not chart_df.empty:
-
-        st.bar_chart(
-            chart_df.set_index("Course")["Current Average"]
+        display_df["Current Average"] = display_df[
+            "Current Average"
+        ].apply(
+            lambda x: f"{x:.2f}%" if pd.notna(x) else "No grades"
         )
+
+        display_df["Completed Weight"] = display_df[
+            "Completed Weight"
+        ].apply(
+            lambda x: f"{x:.2f}%"
+        )
+
+        display_df["Target Grade"] = display_df[
+            "Target Grade"
+        ].apply(
+            lambda x: f"{x:.2f}%"
+        )
+
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.subheader("Grade Comparison")
+
+        chart_df = df.dropna(
+            subset=["Current Average"]
+        )
+
+        if not chart_df.empty:
+
+            st.bar_chart(
+                chart_df.set_index("Course")["Current Average"]
+            )
+
+        else:
+            st.info("Add assessments to see your grade chart.")
 
     else:
         st.info(
-            "Enter grades in the Course Tracker to see your chart."
+            "No courses found. Go to Manage Courses to add one."
         )
 
 
-# --------------------------------------------------
+# -----------------------------------------
+# MANAGE COURSES
+# -----------------------------------------
+
+elif page == "Manage Courses":
+
+    st.header("Manage Courses")
+
+    st.subheader("Add a New Course")
+
+    with st.form("add_course_form"):
+
+        course_name = st.text_input(
+            "Course Name",
+            placeholder="Example: CISC 121"
+        )
+
+        target_grade = st.number_input(
+            "Target Grade (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=85.0
+        )
+
+        submitted = st.form_submit_button("Add Course")
+
+        if submitted:
+
+            if not course_name.strip():
+                st.error("Please enter a course name.")
+
+            else:
+                try:
+                    add_course(
+                        course_name.strip(),
+                        target_grade
+                    )
+
+                    st.success("Course added successfully!")
+                    st.rerun()
+
+                except sqlite3.IntegrityError:
+                    st.error(
+                        "This course already exists or contains invalid data."
+                    )
+
+    st.divider()
+
+    st.subheader("Existing Courses")
+
+    courses = get_courses()
+
+    for course_id, name, target_grade in courses:
+
+        with st.expander(name):
+
+            with st.form(f"edit_course_{course_id}"):
+
+                new_name = st.text_input(
+                    "Course Name",
+                    value=name
+                )
+
+                new_target = st.number_input(
+                    "Target Grade (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(target_grade)
+                )
+
+                if st.form_submit_button("Save Changes"):
+
+                    try:
+                        update_course(
+                            course_id,
+                            new_name.strip(),
+                            new_target
+                        )
+
+                        st.success("Course updated!")
+                        st.rerun()
+
+                    except sqlite3.IntegrityError:
+                        st.error("Unable to update course.")
+
+            st.warning(
+                "Deleting a course will also delete its assessments."
+            )
+
+            confirm_delete = st.checkbox(
+                "I understand this will delete the course",
+                key=f"confirm_course_{course_id}"
+            )
+
+            if st.button(
+                "Delete Course",
+                key=f"delete_course_{course_id}",
+                disabled=not confirm_delete
+            ):
+
+                # Explicitly remove assessments first.
+                # This also works with the original database schema.
+                with sqlite3.connect("grades.db") as connection:
+                    connection.execute(
+                        "DELETE FROM assessments WHERE course_id = ?",
+                        (course_id,)
+                    )
+
+                    connection.execute(
+                        "DELETE FROM courses WHERE id = ?",
+                        (course_id,)
+                    )
+
+                st.success("Course deleted.")
+                st.rerun()
+
+
+# -----------------------------------------
 # COURSE TRACKER
-# --------------------------------------------------
+# -----------------------------------------
 
 elif page == "Course Tracker":
 
     st.header("Course Grade Tracker")
 
-    course = st.selectbox(
-        "Select a course",
-        COURSE_NAMES
-    )
+    courses = get_courses()
 
-    course_data = st.session_state.courses[course]
+    if not courses:
 
-    # Assessment count
-    count_key = f"{course}_num_assignments"
-
-    if count_key not in st.session_state:
-        st.session_state[count_key] = course_data.get(
-            "num_assignments", 3
+        st.info(
+            "No courses available. Add a course under Manage Courses."
         )
 
-    num_assignments = st.number_input(
-        "Number of graded assessments",
-        min_value=1,
-        max_value=20,
-        step=1,
-        key=count_key,
-        on_change=save_assessment_count,
-        args=(course,)
-    )
+    else:
 
-    total_weighted_grade = 0
-    total_weight = 0
+        course_options = {
+            name: (course_id, target)
+            for course_id, name, target in courses
+        }
 
-    st.subheader("Your Assessments")
+        selected_course = st.selectbox(
+            "Select a Course",
+            list(course_options.keys())
+        )
 
-    for i in range(num_assignments):
+        course_id, target_grade = course_options[
+            selected_course
+        ]
 
-        st.write(f"Assessment {i + 1}")
+        st.subheader("Add Assessment")
 
-        grade_key = f"{course}_grade_{i}"
-        weight_key = f"{course}_weight_{i}"
+        with st.form("add_assessment_form"):
 
-        # Restore grade
-        if grade_key not in st.session_state:
-            st.session_state[grade_key] = course_data.get(
-                grade_key, 0.0
+            assessment_name = st.text_input(
+                "Assessment Name",
+                placeholder="Example: Midterm 1"
             )
-
-        # Restore weight
-        if weight_key not in st.session_state:
-            st.session_state[weight_key] = course_data.get(
-                weight_key, 0.0
-            )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
 
             grade = st.number_input(
-                f"Grade (%) - Assessment {i + 1}",
+                "Grade (%)",
                 min_value=0.0,
                 max_value=100.0,
-                step=1.0,
-                key=grade_key,
-                on_change=save_grade,
-                args=(course, i)
+                value=0.0
             )
-
-        with col2:
 
             weight = st.number_input(
-                f"Weight (%) - Assessment {i + 1}",
-                min_value=0.0,
+                "Weight (%)",
+                min_value=0.01,
                 max_value=100.0,
-                step=1.0,
-                key=weight_key,
-                on_change=save_grade,
-                args=(course, i)
+                value=10.0
             )
 
-        total_weighted_grade += calculate_weighted_grade(
-            grade, weight
-        )
-
-        total_weight += weight
-
-    st.divider()
-
-    # Results
-    st.subheader("Your Results")
-
-    if total_weight > 100:
-
-        st.error(
-            "Total assessment weight cannot exceed 100%."
-        )
-
-    elif total_weight > 0:
-
-        current_average = calculate_current_average(
-            total_weighted_grade,
-            total_weight
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.metric(
-                "Current Average",
-                f"{current_average:.2f}%"
+            submitted = st.form_submit_button(
+                "Add Assessment"
             )
 
-        with col2:
-            st.metric(
-                "Completed Course Weight",
-                f"{total_weight:.2f}%"
-            )
+            if submitted:
 
-        st.subheader("Target Grade Calculator")
-
-        target_key = f"{course}_target_grade"
-
-        if target_key not in st.session_state:
-            st.session_state[target_key] = course_data.get(
-                "target_grade", 85.0
-            )
-
-        target_grade = st.number_input(
-            "Desired Final Grade (%)",
-            min_value=0.0,
-            max_value=100.0,
-            step=1.0,
-            key=target_key,
-            on_change=save_target,
-            args=(course,)
-        )
-
-        if total_weight < 100:
-
-            required_average = calculate_required_grade(
-                target_grade,
-                total_weighted_grade,
-                total_weight
-            )
-
-            if required_average is not None:
-
-                st.metric(
-                    "Required Average on Remaining Assessments",
-                    f"{required_average:.2f}%"
+                _, current_weight, _ = get_course_results(
+                    course_id
                 )
 
-                if required_average > 100:
+                if not assessment_name.strip():
+                    st.error("Enter an assessment name.")
 
+                elif current_weight + weight > 100.000001:
                     st.error(
-                        "Your target is not achievable."
-                    )
-
-                elif required_average <= 0:
-
-                    st.success(
-                        "You have already earned enough points "
-                        "to reach your target!"
+                        "Total assessment weight cannot exceed 100%."
                     )
 
                 else:
 
-                    st.success(
-                        "Your target is mathematically achievable!"
+                    try:
+                        add_assessment(
+                            course_id,
+                            assessment_name.strip(),
+                            grade,
+                            weight
+                        )
+
+                        st.success("Assessment saved!")
+                        st.rerun()
+
+                    except sqlite3.IntegrityError:
+                        st.error("Unable to save assessment.")
+
+        st.divider()
+
+        st.subheader("Your Assessments")
+
+        assessments = get_assessments(course_id)
+
+        if not assessments:
+
+            st.info("No assessments added yet.")
+
+        for assessment in assessments:
+
+            assessment_id, _, name, grade, weight = assessment
+
+            with st.expander(name):
+
+                with st.form(f"edit_assessment_{assessment_id}"):
+
+                    new_name = st.text_input(
+                        "Assessment Name",
+                        value=name
                     )
 
-        else:
+                    new_grade = st.number_input(
+                        "Grade (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(grade)
+                    )
 
-            st.info(
-                "All course assessments have been completed."
+                    new_weight = st.number_input(
+                        "Weight (%)",
+                        min_value=0.01,
+                        max_value=100.0,
+                        value=float(weight)
+                    )
+
+                    if st.form_submit_button("Save Changes"):
+
+                        _, current_weight, _ = get_course_results(
+                            course_id
+                        )
+
+                        updated_total = (
+                            current_weight - weight + new_weight
+                        )
+
+                        if not new_name.strip():
+                            st.error("Enter an assessment name.")
+
+                        elif updated_total > 100.000001:
+                            st.error(
+                                "Total assessment weight cannot exceed 100%."
+                            )
+
+                        else:
+
+                            update_assessment(
+                                assessment_id,
+                                new_name.strip(),
+                                new_grade,
+                                new_weight
+                            )
+
+                            st.success("Assessment updated!")
+                            st.rerun()
+
+                if st.button(
+                    "Delete Assessment",
+                    key=f"delete_assessment_{assessment_id}"
+                ):
+
+                    delete_assessment(assessment_id)
+
+                    st.success("Assessment deleted.")
+                    st.rerun()
+
+        st.divider()
+
+        st.subheader("Your Results")
+
+        average, total_weight, total_weighted = (
+            get_course_results(course_id)
+        )
+
+        if total_weight > 100:
+
+            st.error(
+                "Assessment weights exceed 100%. "
+                "Please correct your saved assessments."
             )
 
-    else:
+        elif average is not None:
 
-        st.info(
-            "Enter your assessment grades and weights "
-            "to see your results."
-        )
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.metric(
+                    "Current Average",
+                    f"{average:.2f}%"
+                )
+
+            with col2:
+                st.metric(
+                    "Completed Course Weight",
+                    f"{total_weight:.2f}%"
+                )
+
+            st.subheader("Target Grade Calculator")
+
+            st.write(
+                f"Your target final grade: {target_grade:.2f}%"
+            )
+
+            if total_weight < 100:
+
+                required_average = calculate_required_grade(
+                    target_grade,
+                    total_weighted,
+                    total_weight
+                )
+
+                if required_average is not None:
+
+                    st.metric(
+                        "Required Average on Remaining Assessments",
+                        f"{required_average:.2f}%"
+                    )
+
+                    if required_average > 100:
+                        st.error(
+                            "Your target is not achievable."
+                        )
+
+                    elif required_average <= 0:
+                        st.success(
+                            "You have already earned enough points "
+                            "to reach your target!"
+                        )
+
+                    else:
+                        st.success(
+                            "Your target is mathematically achievable!"
+                        )
+
+            else:
+                st.info("All assessments have been completed.")
+
+        else:
+            st.info(
+                "Add assessments to calculate your current average."
+            )
