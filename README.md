@@ -202,3 +202,11 @@ GitHub: [nandana-vin](https://github.com/nandana-vin)
 Core application implemented with course management, grade calculations, SQLite persistence, dashboard visualizations, and automated unit tests.
 
 Further improvements and deployment are planned.
+
+## Application Screenshots
+
+### Academic Dashboard
+
+The dashboard provides an overview of your courses, current grades, completed assessment weights, and grade comparisons.
+
+![Student Grade Tracker Dashboard](screenshots/dashboard.png)
